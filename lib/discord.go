@@ -5,15 +5,15 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"github.com/sirupsen/logrus"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 var client *http.Client
@@ -161,7 +161,7 @@ func GetBotGlobalLimit(token string, user *BotUserResponse) (uint, error) {
 		return 0, errors.New("500 on gateway/bot")
 	}
 
-	body, _ := ioutil.ReadAll(bot.Body)
+	body, _ := io.ReadAll(bot.Body)
 
 	var s BotGatewayResponse
 
@@ -200,7 +200,7 @@ func GetBotUser(token string) (*BotUserResponse, error) {
 		return nil, errors.New("500 on users/@me")
 	}
 
-	body, _ := ioutil.ReadAll(bot.Body)
+	body, _ := io.ReadAll(bot.Body)
 
 	var s BotUserResponse
 
@@ -220,6 +220,7 @@ func doDiscordReq(ctx context.Context, path string, method string, body io.ReadC
 
 	discordReq.Header = header
 	startTime := time.Now()
+
 	discordResp, err := client.Do(discordReq)
 
 	identifier := ctx.Value("identifier")
@@ -242,6 +243,7 @@ func doDiscordReq(ctx context.Context, path string, method string, body io.ReadC
 
 		RequestHistogram.With(map[string]string{"route": route, "status": status, "method": method, "clientId": identifier.(string)}).Observe(elapsed)
 	}
+
 	return discordResp, err
 }
 
@@ -255,11 +257,12 @@ func ProcessRequest(ctx context.Context, item *QueueItem) (*http.Response, error
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			res.WriteHeader(408)
+			res.SetStatus(408)
 		} else {
-			res.WriteHeader(500)
+			res.SetStatus(500)
 		}
-		_, _ = res.Write([]byte(err.Error()))
+		res.WriteBody([]byte(err.Error()))
+		res.Send()
 		return nil, err
 	}
 
@@ -275,6 +278,8 @@ func ProcessRequest(ctx context.Context, item *QueueItem) (*http.Response, error
 
 	if err != nil {
 		return nil, err
+	} else {
+		item.Res.Send()
 	}
 
 	return discordResp, nil

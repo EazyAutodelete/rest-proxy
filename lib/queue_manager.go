@@ -3,15 +3,16 @@ package lib
 import (
 	"context"
 	"errors"
-	lru "github.com/hashicorp/golang-lru"
-	"github.com/hashicorp/memberlist"
-	"github.com/sirupsen/logrus"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	lru "github.com/hashicorp/golang-lru"
+	"github.com/hashicorp/memberlist"
+	"github.com/sirupsen/logrus"
 )
 
 type QueueType int64
@@ -154,7 +155,7 @@ func (m *QueueManager) calculateRoute(pathHash uint64) string {
 	return addr
 }
 
-func (m *QueueManager) routeRequest(addr string, req *http.Request) (*http.Response, error) {
+func (m *QueueManager) routeRequest(addr string, req *Request) (*http.Response, error) {
 	nodeReq, err := http.NewRequestWithContext(req.Context(), req.Method, "http://"+addr+req.URL.Path+"?"+req.URL.RawQuery, req.Body)
 	nodeReq.Header = req.Header.Clone()
 	nodeReq.Header.Set("nirn-routed-to", addr)
@@ -182,18 +183,8 @@ func (m *QueueManager) routeRequest(addr string, req *http.Request) (*http.Respo
 	return resp, err
 }
 
-func Generate429(resp *http.ResponseWriter) {
-	writer := *resp
-	writer.Header().Set("generated-by-proxy", "true")
-	writer.Header().Set("x-ratelimit-scope", "user")
-	writer.Header().Set("x-ratelimit-limit", "1")
-	writer.Header().Set("x-ratelimit-remaining", "0")
-	writer.Header().Set("x-ratelimit-reset", strconv.FormatInt(time.Now().Add(1*time.Second).Unix(), 10))
-	writer.Header().Set("x-ratelimit-after", "1")
-	writer.Header().Set("retry-after", "1")
-	writer.Header().Set("content-type", "application/json")
-	writer.WriteHeader(429)
-	writer.Write([]byte("{\n\t\"global\": false,\n\t\"message\": \"You are being rate limited.\",\n\t\"retry_after\": 1\n}"))
+func RetryRequest(req *Request) {
+	req.Message.Nack(false, false)
 }
 
 func (m *QueueManager) getOrCreateBotQueue(token string) (*RequestQueue, error) {
@@ -246,7 +237,7 @@ func (m *QueueManager) getOrCreateBearerQueue(token string) (*RequestQueue, erro
 	return q.(*RequestQueue), nil
 }
 
-func (m *QueueManager) DiscordRequestHandler(resp http.ResponseWriter, req *http.Request) {
+func (m *QueueManager) DiscordRequestHandler(req *Request, response *Response) {
 	reqStart := time.Now()
 	metricsPath := GetMetricsPath(req.URL.Path)
 	ConnectionsOpen.With(map[string]string{"route": metricsPath, "method": req.Method}).Inc()
@@ -255,10 +246,10 @@ func (m *QueueManager) DiscordRequestHandler(resp http.ResponseWriter, req *http
 	token := req.Header.Get("Authorization")
 	routingHash, path, queueType := m.GetRequestRoutingInfo(req, token)
 
-	m.fulfillRequest(&resp, req, queueType, path, routingHash, token, reqStart)
+	m.fulfillRequest(req, response, queueType, path, routingHash, token, reqStart)
 }
 
-func (m *QueueManager) GetRequestRoutingInfo(req *http.Request, token string) (routingHash uint64, path string, queueType QueueType) {
+func (m *QueueManager) GetRequestRoutingInfo(req *Request, token string) (routingHash uint64, path string, queueType QueueType) {
 	path = GetOptimisticBucketPath(req.URL.Path, req.Method)
 	queueType = NoAuth
 	if strings.HasPrefix(token, "Bearer") {
@@ -271,8 +262,8 @@ func (m *QueueManager) GetRequestRoutingInfo(req *http.Request, token string) (r
 	return
 }
 
-func (m *QueueManager) fulfillRequest(resp *http.ResponseWriter, req *http.Request, queueType QueueType, path string, pathHash uint64, token string, reqStart time.Time) {
-	logEntry := logger.WithField("clientIp", req.RemoteAddr)
+func (m *QueueManager) fulfillRequest(req *Request, resp *Response, queueType QueueType, path string, pathHash uint64, token string, reqStart time.Time) {
+	logEntry := logger.WithField("clientIp", "1")
 	forwdFor := req.Header.Get("X-Forwarded-For")
 	if forwdFor != "" {
 		logEntry = logEntry.WithField("forwardedFor", forwdFor)
@@ -298,11 +289,11 @@ func (m *QueueManager) fulfillRequest(resp *http.ResponseWriter, req *http.Reque
 
 		if err != nil {
 			if strings.HasPrefix(err.Error(), "429") {
-				Generate429(resp)
+				RetryRequest(req)
 				logEntry.WithFields(logrus.Fields{"function": "getOrCreateQueue", "queueType": queueType}).Warn(err)
 			} else {
-				(*resp).WriteHeader(500)
-				(*resp).Write([]byte(err.Error()))
+				(*resp).SetStatus(500)
+				(*resp).WriteBody([]byte(err.Error()))
 				ErrorCounter.Inc()
 				logEntry.WithFields(logrus.Fields{"function": "getOrCreateQueue", "queueType": queueType}).Error(err)
 			}
@@ -325,7 +316,7 @@ func (m *QueueManager) fulfillRequest(resp *http.ResponseWriter, req *http.Reque
 				if err != nil {
 					logEntry.WithField("function", "FireGlobalRequest").Error(err)
 					ErrorCounter.Inc()
-					Generate429(resp)
+					RetryRequest(req)
 					return
 				}
 			}
@@ -355,7 +346,7 @@ func (m *QueueManager) fulfillRequest(resp *http.ResponseWriter, req *http.Reque
 				logEntry.Warn(err)
 			}
 			// if it's a context canceled on the client it won't get the 429 anyway, if it's within the cluster we should retry
-			Generate429(resp)
+			RetryRequest(req)
 		}
 	}
 }
@@ -382,7 +373,7 @@ func (m *QueueManager) HandleGlobal(w http.ResponseWriter, r *http.Request) {
 
 func (m *QueueManager) CreateMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", m.DiscordRequestHandler)
+	// mux.HandleFunc("/", m.DiscordRequestHandler)
 	mux.HandleFunc("/nirn/global", m.HandleGlobal)
 	mux.HandleFunc("/nirn/healthz", func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(200)

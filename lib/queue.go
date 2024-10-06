@@ -3,20 +3,21 @@ package lib
 import (
 	"context"
 	"errors"
-	"github.com/Clever/leakybucket"
-	"github.com/Clever/leakybucket/memory"
-	"github.com/sirupsen/logrus"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Clever/leakybucket"
+	"github.com/Clever/leakybucket/memory"
+	"github.com/sirupsen/logrus"
 )
 
 type QueueItem struct {
-	Req      *http.Request
-	Res      *http.ResponseWriter
+	Req      *Request
+	Res      *Response
 	doneChan chan *http.Response
 	errChan  chan error
 }
@@ -149,14 +150,14 @@ func safeSend(queue *QueueChannel, value *QueueItem) {
 	defer func() {
 		if recover() != nil {
 			value.errChan <- errors.New("failed to send due to closed channel, sending 429 for client to retry")
-			Generate429(value.Res)
+			RetryRequest(value.Req)
 		}
 	}()
 
 	queue.ch <- value
 }
 
-func (q *RequestQueue) Queue(req *http.Request, res *http.ResponseWriter, path string, pathHash uint64) error {
+func (q *RequestQueue) Queue(req *Request, res *Response, path string, pathHash uint64) error {
 	logger.WithFields(logrus.Fields{
 		"bucket": path,
 		"path":   req.URL.Path,
@@ -249,26 +250,20 @@ func parseHeaders(headers *http.Header, preferRetryAfter bool) (int64, int64, ti
 
 func return404webhook(item *QueueItem) {
 	res := *item.Res
-	res.WriteHeader(404)
+	res.SetStatus(404)
 	body := "{\n  \"message\": \"Unknown Webhook\",\n  \"code\": 10015\n}"
-	_, err := res.Write([]byte(body))
-	if err != nil {
-		item.errChan <- err
-		return
-	}
+	res.WriteBody([]byte(body))
+
 	item.doneChan <- nil
 
 }
 
 func return401(item *QueueItem) {
 	res := *item.Res
-	res.WriteHeader(401)
+	res.SetStatus(401)
 	body := "{\n\t\"message\": \"401: Unauthorized\",\n\t\"code\": 0\n}"
-	_, err := res.Write([]byte(body))
-	if err != nil {
-		item.errChan <- err
-		return
-	}
+	res.WriteBody([]byte(body))
+
 	item.doneChan <- nil
 }
 
