@@ -92,21 +92,20 @@ func main() {
 
 	manager := lib.NewQueueManager(bufferSize, maxBearerLruSize)
 
-	exchange := "rest"
-	retryExchange := "restRetry"
-	requestQueue := "restRequestsQueue"
-	queue := requestQueue
-	retryQueue := "restRetryQueue"
+	connectionString := lib.EnvGet("CONNECTION_STRING", "amqp://localhost")
+	exchange := lib.EnvGet("EXCHANGE", "rest")
+	retryExchange := lib.EnvGet("RETRY_EXCHANGE", "restRetry")
+	requestQueue := lib.EnvGet("REQUEST_QUEUE", "restRequestQueue")
+	retryQueue := lib.EnvGet("RETRY_QUEUE", "restRetryQueue")
 	queueArgs := amqp091.Table{
-		"x-dead-letter-exchange": "restRetry",
+		"x-dead-letter-exchange": retryExchange,
 	}
 	retryArgs := amqp091.Table{
 		"x-message-ttl":          int32(1000),
-		"x-dead-letter-exchange": "rest",
+		"x-dead-letter-exchange": exchange,
 	}
 
-	conn, err := amqp091.Dial("amqp://localhost")
-	log.Printf("ex: %s q: %s", exchange, queue)
+	conn, err := amqp091.Dial(connectionString)
 	if err != nil {
 		log.Fatalf("Failed to connect to RabbitMQ: %s", err)
 
@@ -128,7 +127,7 @@ func main() {
 		log.Fatalf("Failed to declare Retry Exchange: %s", err)
 	}
 
-	q, err := ch.QueueDeclare(queue, true, false, false, false, queueArgs)
+	q, err := ch.QueueDeclare(requestQueue, true, false, false, false, queueArgs)
 	if err != nil {
 		log.Fatalf("Failed to declare queue: %s", err)
 	}
@@ -145,7 +144,6 @@ func main() {
 		return
 	}
 
-	// Konsumiere Nachrichten aus der Request Queue
 	msgs, err := ch.Consume(requestQueue, "", false, false, false, false, nil)
 	if err != nil {
 		log.Fatalf("Failed to register a consumer: %s", err)
