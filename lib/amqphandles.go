@@ -102,6 +102,12 @@ func (r *Response) WriteBody(body []byte) {
 }
 
 func (r *Response) Send() {
+
+	if r.Request.ReplyTo == "" || r.Request.CorrelationId == "" || len(r.Request.ReplyTo) < 2 || len(r.Request.CorrelationId) < 2 {
+		r.Request.Ack()
+		return
+	}
+
 	retBody := map[string]interface{}{
 		"status": r.Status,
 	}

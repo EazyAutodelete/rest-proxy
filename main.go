@@ -108,13 +108,11 @@ func main() {
 	conn, err := amqp091.Dial(connectionString)
 	if err != nil {
 		log.Fatalf("Failed to connect to RabbitMQ: %s", err)
-
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
 		log.Fatalf("Failed to open a channel: %s", err)
-
 	}
 
 	err = ch.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
@@ -157,7 +155,6 @@ func main() {
 			response := lib.NewResponse(ch, request)
 
 			manager.DiscordRequestHandler(request, response)
-
 		}
 	}()
 
@@ -212,10 +209,4 @@ func main() {
 	}
 
 	logger.Info("Bye bye")
-}
-
-func failOnError(err error, msg string) {
-	if err != nil {
-		log.Fatalf("%s: %s", msg, err)
-	}
 }
