@@ -130,6 +130,11 @@ func main() {
 		log.Fatalf("Failed to declare queue: %s", err)
 	}
 
+	err = ch.QueueBind(q.Name, requestQueue, exchange, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to bind queue: %s", err)
+	}
+
 	rQ, err := ch.QueueDeclare(retryQueue, true, false, false, false, retryArgs)
 	if err != nil {
 		log.Fatalf("Failed to declare Retry Queue: %s", err)
