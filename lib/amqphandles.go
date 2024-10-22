@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -24,10 +26,14 @@ type Request struct {
 }
 
 type RabbitRequest struct {
-	Body    map[string]interface{}
-	Method  string
-	Path    string
-	Headers map[string]string
+	Body    json.RawMessage   `json:"body"`
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers"`
+}
+
+type BodyObject struct {
+	Content string `json:"content"`
 }
 
 type Response struct {
@@ -43,32 +49,59 @@ func (r *Response) Header() http.Header {
 }
 
 func NewRequest(rabbitMessage amqp091.Delivery) *Request {
-	var body RabbitRequest
+	var rabbitRequest RabbitRequest
 
-	err := json.Unmarshal(rabbitMessage.Body, &body)
+	err := json.Unmarshal(rabbitMessage.Body, &rabbitRequest)
 	if err != nil {
 		log.Fatalf("%s", err)
 	}
 
 	headers := make(http.Header)
 
-	for key, value := range body.Headers {
+	for key, value := range rabbitRequest.Headers {
 		headers.Add(key, value)
 	}
 
-	parsedUrl, err := url.Parse(body.Path)
+	parsedUrl, err := url.Parse(rabbitRequest.Path)
 
-	jsonBody, err := json.Marshal(body.Body)
-	buffer := bytes.NewBuffer(jsonBody)
-	reader := io.NopCloser(buffer)
+	var body io.ReadCloser
 
-	if len(body.Body) == 0 {
-		reader = nil
+	switch headers.Get("Content-Type") {
+	case "application/json":
+		// Handle body as JSON object
+		var bodyObject BodyObject
+		if err := json.Unmarshal(rabbitRequest.Body, &bodyObject); err == nil {
+			bodyBytes, _ := json.Marshal(bodyObject)
+			body = io.NopCloser(bytes.NewReader(bodyBytes))
+			// fmt.Println("Body as JSON object:", string(bodyBytes))
+		} else {
+			fmt.Println("Error parsing JSON body:", err)
+
+		}
+
+	case "application/x-www-form-urlencoded":
+		// Handle body as form-urlencoded string
+		var bodyString string
+		if err := json.Unmarshal(rabbitRequest.Body, &bodyString); err == nil {
+			formData, err := url.ParseQuery(bodyString) // Parse the form-urlencoded string
+			if err != nil {
+				fmt.Println("Error parsing form-urlencoded body:", err)
+
+			}
+			body = io.NopCloser(strings.NewReader(formData.Encode()))
+			// fmt.Println("Body as form-urlencoded:", formData)
+		} else {
+			fmt.Println("Error parsing body as form-urlencoded string:", err)
+
+		}
+
+	default:
+		fmt.Println("Unsupported Content-Type:", headers.Get("Content-Type"))
 	}
 
 	r := &Request{
-		Body:          reader,
-		Method:        body.Method,
+		Body:          body,
+		Method:        rabbitRequest.Method,
 		Header:        headers,
 		CorrelationId: rabbitMessage.CorrelationId,
 		ReplyTo:       rabbitMessage.ReplyTo,
@@ -128,7 +161,6 @@ func (r *Response) Send() {
 	if err != nil {
 		log.Fatalf("Failed to publish a message: %s", err)
 	} else {
-		log.Println("Sent response")
 		r.Request.Ack()
 	}
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -95,7 +94,7 @@ func main() {
 	connectionString := lib.EnvGet("CONNECTION_STRING", "amqp://localhost")
 	exchange := lib.EnvGet("EXCHANGE", "rest")
 	retryExchange := lib.EnvGet("RETRY_EXCHANGE", "restRetry")
-	requestQueue := lib.EnvGet("REQUEST_QUEUE", "restRequestQueue")
+	requestQueue := lib.EnvGet("REQUEST_QUEUE", "restRequestsQueue")
 	retryQueue := lib.EnvGet("RETRY_QUEUE", "restRetryQueue")
 	queueArgs := amqp091.Table{
 		"x-dead-letter-exchange": retryExchange,
@@ -154,8 +153,6 @@ func main() {
 
 	go func() {
 		for msg := range msgs {
-			fmt.Printf("Received message: %s\n", msg.Body)
-
 			request := lib.NewRequest(msg)
 			response := lib.NewResponse(ch, request)
 
