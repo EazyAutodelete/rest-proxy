@@ -32,10 +32,6 @@ type RabbitRequest struct {
 	Headers map[string]string `json:"headers"`
 }
 
-type BodyObject struct {
-	Content string `json:"content"`
-}
-
 type Response struct {
 	Request *Request
 	Status  int
@@ -62,41 +58,59 @@ func NewRequest(rabbitMessage amqp091.Delivery) *Request {
 		headers.Add(key, value)
 	}
 
+	if !strings.HasPrefix(rabbitRequest.Path, "/") {
+		rabbitRequest.Path = "/" + rabbitRequest.Path
+	}
+
+	// if !strings.HasPrefix(rabbitRequest.Path, "/api") {
+	// 	rabbitRequest.Path = "/api" + rabbitRequest.Path
+	// }
+
+	if len(rabbitRequest.Path) == 0 {
+		rabbitRequest.Path = "/"
+	}
+
 	parsedUrl, err := url.Parse(rabbitRequest.Path)
+	println(parsedUrl)
 
 	var body io.ReadCloser
 
-	switch headers.Get("Content-Type") {
-	case "application/json":
-		// Handle body as JSON object
-		var bodyObject BodyObject
-		if err := json.Unmarshal(rabbitRequest.Body, &bodyObject); err == nil {
-			bodyBytes, _ := json.Marshal(bodyObject)
-			body = io.NopCloser(bytes.NewReader(bodyBytes))
-			// fmt.Println("Body as JSON object:", string(bodyBytes))
-		} else {
-			fmt.Println("Error parsing JSON body:", err)
+	if rabbitRequest.Method == "" {
+		rabbitRequest.Method = "GET"
+	}
 
-		}
+	if len(rabbitRequest.Body) > 0 && rabbitRequest.Method != "GET" {
+		switch headers.Get("Content-Type") {
+		case "application/json":
+			var bodyObject map[string]interface{}
+			if err := json.Unmarshal(rabbitRequest.Body, &bodyObject); err == nil {
+				bodyBytes, _ := json.Marshal(bodyObject)
+				body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	case "application/x-www-form-urlencoded":
-		// Handle body as form-urlencoded string
-		var bodyString string
-		if err := json.Unmarshal(rabbitRequest.Body, &bodyString); err == nil {
-			formData, err := url.ParseQuery(bodyString) // Parse the form-urlencoded string
-			if err != nil {
-				fmt.Println("Error parsing form-urlencoded body:", err)
+			} else {
+				fmt.Println("Error parsing JSON body:", err, string(rabbitRequest.Body))
+			}
+
+		case "application/x-www-form-urlencoded":
+			var bodyString string
+			if err := json.Unmarshal(rabbitRequest.Body, &bodyString); err == nil {
+				formData, err := url.ParseQuery(bodyString)
+				if err != nil {
+					fmt.Println("Error parsing form-urlencoded body:", err)
+				}
+
+				body = io.NopCloser(strings.NewReader(formData.Encode()))
+
+			} else {
+				fmt.Println("Error parsing body as form-urlencoded string:", err)
 
 			}
-			body = io.NopCloser(strings.NewReader(formData.Encode()))
-			// fmt.Println("Body as form-urlencoded:", formData)
-		} else {
-			fmt.Println("Error parsing body as form-urlencoded string:", err)
 
+		default:
+			fmt.Println("Unsupported Content-Type:", headers.Get("Content-Type"))
 		}
-
-	default:
-		fmt.Println("Unsupported Content-Type:", headers.Get("Content-Type"))
+	} else {
+		body = nil
 	}
 
 	r := &Request{
