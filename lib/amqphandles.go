@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -38,6 +39,128 @@ type Response struct {
 	Body    []byte
 	Channel *amqp091.Channel
 	header  http.Header
+}
+
+func removeUrlCredentials(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		fmt.Println("Invalid URL:", err)
+		return rawURL
+	}
+	userInfo := parsedURL.User.Username()
+	if userInfo != "" {
+		userInfo += ":****@"
+	}
+
+	loggedURL := fmt.Sprintf("%s://%s%s%s", parsedURL.Scheme, userInfo, parsedURL.Host, parsedURL.RequestURI())
+	loggedURL = strings.TrimRight(loggedURL, "/")
+
+	return loggedURL
+}
+
+func ConnectRabbitMQ() (*amqp091.Connection, error) {
+	var conn *amqp091.Connection
+	var err error
+
+	queueUser := EnvGet("QUEUE_USER", "guest")
+	queuePass := EnvGet("QUEUE_PASSWORD", "guest")
+	rawQueueHosts := EnvGet("QUEUE_HOSTS", "localhost:5672")
+	queueHostStrings := strings.Split(rawQueueHosts, ",")
+
+	queueHosts := make([]string, len(queueHostStrings))
+	for i, host := range queueHostStrings {
+		queueHosts[i] = fmt.Sprintf("amqp://%s:%s@%s", queueUser, queuePass, host)
+	}
+
+	for {
+		for _, url := range queueHosts {
+			log.Printf("Trying to connect to RabbitMQ at %s...", removeUrlCredentials(url))
+			conn, err = amqp091.Dial(url)
+			if err == nil {
+				log.Printf("Connected to RabbitMQ at %s", removeUrlCredentials(url))
+				return conn, nil
+			}
+			log.Printf("Failed to connect to RabbitMQ at %s: %s", removeUrlCredentials(url), err)
+		}
+
+		log.Printf("Failed to connect to RabbitMQ, retrying in 1 second")
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func SetupRabbitMQConnection() *amqp091.Connection {
+	for {
+		conn, err := ConnectRabbitMQ()
+		if err != nil {
+			log.Printf("Failed to connect to RabbitMQ cluster: %s", err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		go func(c *amqp091.Connection) {
+			<-c.NotifyClose(make(chan *amqp091.Error))
+			log.Println("RabbitMQ connection closed. Attempting to reconnect...")
+			SetupRabbitMQConnection()
+		}(conn)
+
+		return conn
+	}
+}
+
+func PrepareRabbitMQ(conn *amqp091.Connection) (*amqp091.Channel, <-chan amqp091.Delivery) {
+	exchange := EnvGet("EXCHANGE", "rest")
+	retryExchange := EnvGet("RETRY_EXCHANGE", "restRetry")
+	requestQueue := EnvGet("REQUEST_QUEUE", "restRequestsQueue")
+	retryQueue := EnvGet("RETRY_QUEUE", "restRetryQueue")
+	queueArgs := amqp091.Table{
+		"x-dead-letter-exchange": retryExchange,
+	}
+	retryArgs := amqp091.Table{
+		"x-message-ttl":          int32(1000),
+		"x-dead-letter-exchange": exchange,
+	}
+
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to open a channel: %s", err)
+	}
+
+	err = ch.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to declare exchange: %s", err)
+	}
+
+	err = ch.ExchangeDeclare(retryExchange, "direct", true, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to declare Retry Exchange: %s", err)
+	}
+
+	q, err := ch.QueueDeclare(requestQueue, true, false, false, false, queueArgs)
+	if err != nil {
+		log.Fatalf("Failed to declare queue: %s", err)
+	}
+
+	err = ch.QueueBind(q.Name, requestQueue, exchange, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to bind queue: %s", err)
+	}
+
+	_, err = ch.QueueDeclare(retryQueue, true, false, false, false, retryArgs)
+	if err != nil {
+		log.Fatalf("Failed to declare Retry Queue: %s", err)
+	}
+
+	if ch == nil {
+		log.Fatalf("No channel")
+		return ch, nil
+	}
+
+	msgs, err := ch.Consume(requestQueue, "", false, false, false, false, nil)
+	if err != nil {
+		log.Fatalf("Failed to register a consumer: %s", err)
+	}
+
+	return ch, msgs
 }
 
 func (r *Response) Header() http.Header {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"github.com/germanoeich/nirn-proxy/lib"
 	"github.com/hashicorp/memberlist"
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/rabbitmq/amqp091-go"
 	"github.com/sirupsen/logrus"
 )
 
@@ -91,70 +89,14 @@ func main() {
 
 	manager := lib.NewQueueManager(bufferSize, maxBearerLruSize)
 
-	connectionString := lib.EnvGet("CONNECTION_STRING", "amqp://localhost")
-	exchange := lib.EnvGet("EXCHANGE", "rest")
-	retryExchange := lib.EnvGet("RETRY_EXCHANGE", "restRetry")
-	requestQueue := lib.EnvGet("REQUEST_QUEUE", "restRequestsQueue")
-	retryQueue := lib.EnvGet("RETRY_QUEUE", "restRetryQueue")
-	queueArgs := amqp091.Table{
-		"x-dead-letter-exchange": retryExchange,
-	}
-	retryArgs := amqp091.Table{
-		"x-message-ttl":          int32(1000),
-		"x-dead-letter-exchange": exchange,
-	}
+	conn := lib.SetupRabbitMQConnection()
 
-	conn, err := amqp091.Dial(connectionString)
-	if err != nil {
-		log.Fatalf("Failed to connect to RabbitMQ: %s", err)
-	}
-
-	ch, err := conn.Channel()
-	if err != nil {
-		log.Fatalf("Failed to open a channel: %s", err)
-	}
-
-	err = ch.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
-	if err != nil {
-		log.Fatalf("Failed to declare exchange: %s", err)
-	}
-
-	err = ch.ExchangeDeclare(retryExchange, "direct", true, false, false, false, nil)
-	if err != nil {
-		log.Fatalf("Failed to declare Retry Exchange: %s", err)
-	}
-
-	q, err := ch.QueueDeclare(requestQueue, true, false, false, false, queueArgs)
-	if err != nil {
-		log.Fatalf("Failed to declare queue: %s", err)
-	}
-
-	err = ch.QueueBind(q.Name, requestQueue, exchange, false, nil)
-	if err != nil {
-		log.Fatalf("Failed to bind queue: %s", err)
-	}
-
-	rQ, err := ch.QueueDeclare(retryQueue, true, false, false, false, retryArgs)
-	if err != nil {
-		log.Fatalf("Failed to declare Retry Queue: %s", err)
-	}
-
-	log.Printf("Queue %s & %s was declared", q.Name, rQ.Name)
-
-	if ch == nil {
-		log.Fatalf("No channel")
-		return
-	}
-
-	msgs, err := ch.Consume(requestQueue, "", false, false, false, false, nil)
-	if err != nil {
-		log.Fatalf("Failed to register a consumer: %s", err)
-	}
+	channel, msgs := lib.PrepareRabbitMQ(conn)
 
 	go func() {
 		for msg := range msgs {
 			request := lib.NewRequest(msg)
-			response := lib.NewResponse(ch, request)
+			response := lib.NewResponse(channel, request)
 
 			manager.DiscordRequestHandler(request, response)
 		}
