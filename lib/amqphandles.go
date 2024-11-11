@@ -125,6 +125,11 @@ func PrepareRabbitMQ(conn *amqp091.Connection) (*amqp091.Channel, <-chan amqp091
 		log.Fatalf("Failed to open a channel: %s", err)
 	}
 
+	err = ch.Qos(50, 0, false)
+	if err != nil {
+		log.Fatalf("Failed to set QoS: %s", err)
+	}
+
 	err = ch.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
 	if err != nil {
 		log.Fatalf("Failed to declare exchange: %s", err)
@@ -198,7 +203,6 @@ func NewRequest(rabbitMessage amqp091.Delivery) *Request {
 	}
 
 	parsedUrl, err := url.Parse(rabbitRequest.Path)
-	println(parsedUrl)
 
 	var body io.ReadCloser
 
