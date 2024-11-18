@@ -190,6 +190,11 @@ func NewRequest(rabbitMessage amqp091.Delivery) *Request {
 		headers.Add("User-Agent", "DiscordBot (https://github.com/EazyAutodelete/rest-proxy, v2.3.3)")
 	}
 
+	authHeader := headers.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bot ") && !strings.HasPrefix(authHeader, "Bearer ") {
+		headers.Set("Authorization", "Bot "+authHeader)
+	}
+
 	if !strings.HasPrefix(rabbitRequest.Path, "/") {
 		rabbitRequest.Path = "/" + rabbitRequest.Path
 	}

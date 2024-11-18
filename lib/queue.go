@@ -3,6 +3,7 @@ package lib
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -60,6 +61,7 @@ func NewRequestQueue(processor func(ctx context.Context, item *QueueItem) (*http
 	memStorage := memory.New()
 	globalBucket, _ := memStorage.Create("global", limit, 1*time.Second)
 	if err != nil {
+		log.Println("Error getting global limit", err)
 		if strings.HasPrefix(err.Error(), "invalid token") {
 			// Return a queue that will only return 401s
 			var invalid = new(int64)
