@@ -130,17 +130,17 @@ func PrepareRabbitMQ(conn *amqp091.Connection) (*amqp091.Channel, <-chan amqp091
 		log.Fatalf("Failed to set QoS: %s", err)
 	}
 
-	err = ch.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
+	err = ch.ExchangeDeclare(exchange, "direct", false, false, false, false, nil)
 	if err != nil {
 		log.Fatalf("Failed to declare exchange: %s", err)
 	}
 
-	err = ch.ExchangeDeclare(retryExchange, "direct", true, false, false, false, nil)
+	err = ch.ExchangeDeclare(retryExchange, "direct", false, false, false, false, nil)
 	if err != nil {
 		log.Fatalf("Failed to declare Retry Exchange: %s", err)
 	}
 
-	q, err := ch.QueueDeclare(requestQueue, true, false, false, false, queueArgs)
+	q, err := ch.QueueDeclare(requestQueue, false, false, false, false, queueArgs)
 	if err != nil {
 		log.Fatalf("Failed to declare queue: %s", err)
 	}
@@ -150,7 +150,7 @@ func PrepareRabbitMQ(conn *amqp091.Connection) (*amqp091.Channel, <-chan amqp091
 		log.Fatalf("Failed to bind queue: %s", err)
 	}
 
-	_, err = ch.QueueDeclare(retryQueue, true, false, false, false, retryArgs)
+	_, err = ch.QueueDeclare(retryQueue, false, false, false, false, retryArgs)
 	if err != nil {
 		log.Fatalf("Failed to declare Retry Queue: %s", err)
 	}
