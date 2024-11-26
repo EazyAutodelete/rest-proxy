@@ -1,4 +1,11 @@
+# Start
+
+```bash
+ docker run -d --name nirn --restart always --network rabbit-rest --network monitor_monitoring -p 8480:8080 -p 9490:9000 ea-rest:2
+```
+
 # Nirn-proxy
+
 Nirn-proxy is a highly available, transparent & dynamic HTTP proxy that 
 handles Discord ratelimits for you and exports meaningful prometheus metrics.
 This project is at the heart of [Dyno](https://dyno.gg), handling several hundreds of requests per sec across hundreds of bots all while keeping 429s at ~100 per hour.

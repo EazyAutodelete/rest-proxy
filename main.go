@@ -13,6 +13,7 @@ import (
 	"github.com/germanoeich/nirn-proxy/lib"
 	"github.com/hashicorp/memberlist"
 	_ "github.com/joho/godotenv/autoload"
+	"github.com/rabbitmq/amqp091-go"
 	"github.com/sirupsen/logrus"
 )
 
@@ -93,12 +94,16 @@ func main() {
 
 	channel, msgs := lib.PrepareRabbitMQ(conn)
 
+	workerPoolSize := lib.EnvGetInt("WORKER_POOL_SIZE", 8)
+	workerQueue := make(chan amqp091.Delivery, bufferSize)
+
+	for i := 0; i < workerPoolSize; i++ {
+		go worker(workerQueue, manager, channel)
+	}
+
 	go func() {
 		for msg := range msgs {
-			request := lib.NewRequest(msg)
-			response := lib.NewResponse(channel, request)
-
-			manager.DiscordRequestHandler(request, response)
+			workerQueue <- msg
 		}
 	}()
 
@@ -151,5 +156,16 @@ func main() {
 		logger.WithFields(logrus.Fields{"function": "http.Shutdown"}).Error(err)
 	}
 
+	close(workerQueue)
+
 	logger.Info("Bye bye")
+}
+
+func worker(msgs <-chan amqp091.Delivery, manager *lib.QueueManager, channel *amqp091.Channel) {
+	for msg := range msgs {
+		request := lib.NewRequest(msg)
+		response := lib.NewResponse(channel, request)
+
+		manager.DiscordRequestHandler(request, response)
+	}
 }
