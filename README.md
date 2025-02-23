@@ -1,3 +1,5 @@
+Note: This is a heavily customized version trimmed to the needs of EazyAutodelete. It will NOT meet your expectations nor your usecase.
+
 # Start
 
 ```bash
