@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"github.com/germanoeich/nirn-proxy/lib"
 	"github.com/hashicorp/memberlist"
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/rabbitmq/amqp091-go"
 	"github.com/sirupsen/logrus"
 )
 
@@ -92,20 +92,33 @@ func main() {
 
 	conn := lib.SetupRabbitMQConnection()
 
-	channel, msgs := lib.PrepareRabbitMQ(conn)
+	lib.InitWorkerPool(manager)
 
-	workerPoolSize := lib.EnvGetInt("WORKER_POOL_SIZE", 8)
-	workerQueue := make(chan amqp091.Delivery, bufferSize)
+	rabbitPrefetch := lib.EnvGetInt("RABBIT_PREFETCH", 512)
+	requestQueue := lib.EnvGet("REQUEST_QUEUE", "restRequestsQueue")
+	consumeWorkers := lib.EnvGetInt("CONSUME_WORKERS", 8)
 
-	for i := 0; i < workerPoolSize; i++ {
-		go worker(workerQueue, manager, channel)
+	for i := 0; i < consumeWorkers; i++ {
+		time.Sleep(time.Duration(i*100) * time.Millisecond)
+		go func(id int) {
+			channel := lib.PrepareRabbitMQChannel(conn, rabbitPrefetch)
+			if channel == nil {
+				logger.Panic("Failed to create RabbitMQ channel")
+			}
+
+			msgs, err := channel.Consume(requestQueue, "", false, false, false, false, nil)
+			if err != nil {
+				logger.Panic(err)
+			}
+
+			for msg := range msgs {
+				logger.Debug("Consumer #" + fmt.Sprint(id) + " received message")
+				lib.SortAndDispatchMessage(channel, msg)
+			}
+		}(i)
 	}
 
-	go func() {
-		for msg := range msgs {
-			workerQueue <- msg
-		}
-	}()
+	time.Sleep(100 * time.Millisecond)
 
 	mux := manager.CreateMux()
 
@@ -156,16 +169,5 @@ func main() {
 		logger.WithFields(logrus.Fields{"function": "http.Shutdown"}).Error(err)
 	}
 
-	close(workerQueue)
-
 	logger.Info("Bye bye")
-}
-
-func worker(msgs <-chan amqp091.Delivery, manager *lib.QueueManager, channel *amqp091.Channel) {
-	for msg := range msgs {
-		request := lib.NewRequest(msg)
-		response := lib.NewResponse(channel, request)
-
-		manager.DiscordRequestHandler(request, response)
-	}
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,6 +21,7 @@ type Request struct {
 	ReplyTo       string
 	CorrelationId string
 	Message       amqp091.Delivery
+	Channel       *amqp091.Channel
 	URL           *url.URL
 	ctx           context.Context
 }
@@ -74,16 +74,16 @@ func ConnectRabbitMQ() (*amqp091.Connection, error) {
 
 	for {
 		for _, url := range queueHosts {
-			log.Printf("Trying to connect to RabbitMQ at %s...", removeUrlCredentials(url))
+			logger.Infof("Trying to connect to RabbitMQ at %s...", removeUrlCredentials(url))
 			conn, err = amqp091.Dial(url)
 			if err == nil {
-				log.Printf("Connected to RabbitMQ at %s", removeUrlCredentials(url))
+				logger.Infof("Connected to RabbitMQ at %s", removeUrlCredentials(url))
 				return conn, nil
 			}
-			log.Printf("Failed to connect to RabbitMQ at %s: %s", removeUrlCredentials(url), err)
+			logger.Warnf("Failed to connect to RabbitMQ at %s: %s", removeUrlCredentials(url), err)
 		}
 
-		log.Printf("Failed to connect to RabbitMQ, retrying in 1 second")
+		logger.Warnf("Failed to connect to RabbitMQ, retrying in 1 second")
 		time.Sleep(1 * time.Second)
 	}
 }
@@ -92,14 +92,14 @@ func SetupRabbitMQConnection() *amqp091.Connection {
 	for {
 		conn, err := ConnectRabbitMQ()
 		if err != nil {
-			log.Printf("Failed to connect to RabbitMQ cluster: %s", err)
+			logger.Warnf("Failed to connect to RabbitMQ cluster: %s", err)
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
 		go func(c *amqp091.Connection) {
 			<-c.NotifyClose(make(chan *amqp091.Error))
-			log.Println("RabbitMQ connection closed. Attempting to reconnect...")
+			logger.Warnf("RabbitMQ connection closed. Attempting to reconnect...")
 			SetupRabbitMQConnection()
 		}(conn)
 
@@ -107,7 +107,7 @@ func SetupRabbitMQConnection() *amqp091.Connection {
 	}
 }
 
-func PrepareRabbitMQ(conn *amqp091.Connection) (*amqp091.Channel, <-chan amqp091.Delivery) {
+func PrepareRabbitMQChannel(conn *amqp091.Connection, prefetch int) *amqp091.Channel {
 	exchange := EnvGet("EXCHANGE", "rest")
 	retryExchange := EnvGet("RETRY_EXCHANGE", "restRetry")
 	requestQueue := EnvGet("REQUEST_QUEUE", "restRequestsQueue")
@@ -122,62 +122,52 @@ func PrepareRabbitMQ(conn *amqp091.Connection) (*amqp091.Channel, <-chan amqp091
 
 	ch, err := conn.Channel()
 	if err != nil {
-		log.Fatalf("Failed to open a channel: %s", err)
+		logger.Fatalf("Failed to open a channel: %s", err)
 	}
 
-	err = ch.Qos(500, 0, false)
+	err = ch.Qos(prefetch, 0, false)
 	if err != nil {
-		log.Fatalf("Failed to set QoS: %s", err)
+		logger.Fatalf("Failed to set QoS: %s", err)
 	}
 
 	err = ch.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
 	if err != nil {
-		log.Fatalf("Failed to declare exchange: %s", err)
+		logger.Fatalf("Failed to declare exchange: %s", err)
 	}
 
 	err = ch.ExchangeDeclare(retryExchange, "direct", true, false, false, false, nil)
 	if err != nil {
-		log.Fatalf("Failed to declare Retry Exchange: %s", err)
+		logger.Fatalf("Failed to declare Retry Exchange: %s", err)
 	}
 
 	q, err := ch.QueueDeclare(requestQueue, true, false, false, false, queueArgs)
 	if err != nil {
-		log.Fatalf("Failed to declare queue: %s", err)
+		logger.Fatalf("Failed to declare queue: %s", err)
 	}
 
 	err = ch.QueueBind(q.Name, requestQueue, exchange, false, nil)
 	if err != nil {
-		log.Fatalf("Failed to bind queue: %s", err)
+		logger.Fatalf("Failed to bind queue: %s", err)
 	}
 
 	_, err = ch.QueueDeclare(retryQueue, true, false, false, false, retryArgs)
 	if err != nil {
-		log.Fatalf("Failed to declare Retry Queue: %s", err)
+		logger.Fatalf("Failed to declare Retry Queue: %s", err)
 	}
 
-	if ch == nil {
-		log.Fatalf("No channel")
-		return ch, nil
-	}
-
-	msgs, err := ch.Consume(requestQueue, "", false, false, false, false, nil)
-	if err != nil {
-		log.Fatalf("Failed to register a consumer: %s", err)
-	}
-
-	return ch, msgs
+	return ch
 }
 
 func (r *Response) Header() http.Header {
 	return r.header
 }
 
-func NewRequest(rabbitMessage amqp091.Delivery) *Request {
+func NewRequest(channel *amqp091.Channel, rabbitMessage amqp091.Delivery) *Request {
 	var rabbitRequest RabbitRequest
 
 	err := json.Unmarshal(rabbitMessage.Body, &rabbitRequest)
 	if err != nil {
-		log.Fatalf("%s", err)
+		logger.Fatalf("%s", err)
 	}
 
 	headers := make(http.Header)
@@ -256,6 +246,7 @@ func NewRequest(rabbitMessage amqp091.Delivery) *Request {
 		CorrelationId: rabbitMessage.CorrelationId,
 		ReplyTo:       rabbitMessage.ReplyTo,
 		Message:       rabbitMessage,
+		Channel:       channel,
 		URL:           parsedUrl,
 		ctx:           context.Background(),
 	}
@@ -300,7 +291,7 @@ func (r *Response) Send() {
 
 	bodyString, jErr := json.Marshal(retBody)
 	if jErr != nil {
-		log.Fatalf("Failed to marshal response: %s", jErr)
+		logger.Errorf("Failed to marshal response: %s %s", jErr, retBody)
 	}
 
 	err := r.Channel.Publish("rest", r.Request.ReplyTo, false, false, amqp091.Publishing{
@@ -309,7 +300,7 @@ func (r *Response) Send() {
 		Body:          bodyString,
 	})
 	if err != nil {
-		log.Fatalf("Failed to publish a message: %s", err)
+		logger.Errorf("Failed to publish a message: %s", err)
 	} else {
 		r.Request.Ack()
 	}
