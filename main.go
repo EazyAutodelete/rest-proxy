@@ -95,8 +95,8 @@ func main() {
 	lib.InitWorkerPool(manager)
 
 	rabbitPrefetch := lib.EnvGetInt("RABBIT_PREFETCH", 512)
-	requestQueue := lib.EnvGet("REQUEST_QUEUE", "restRequestsQueue")
 	consumeWorkers := lib.EnvGetInt("CONSUME_WORKERS", 8)
+	requestQueue := lib.EnvGet("REST_REQUEST_QUEUE", "restRequestsQueue")
 
 	for i := 0; i < consumeWorkers; i++ {
 		time.Sleep(time.Duration(i*100) * time.Millisecond)

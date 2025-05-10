@@ -41,6 +41,12 @@ type Response struct {
 	header  http.Header
 }
 
+var restExchange = EnvGet("REST_REQUEST_EXCHANGE", "restRequests")
+var retryExchange = EnvGet("REST_RETRY_EXCHANGE", "restRequestsRetry")
+var responseExchange = EnvGet("REST_RESPONSE_EXCHANGE", "restResponses")
+var requestQueue = EnvGet("REST_REQUEST_QUEUE", "restRequestsQueue")
+var retryQueue = EnvGet("REST_RETRY_QUEUE", "restRetryQueue")
+
 func removeUrlCredentials(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -108,18 +114,6 @@ func SetupRabbitMQConnection() *amqp091.Connection {
 }
 
 func PrepareRabbitMQChannel(conn *amqp091.Connection, prefetch int) *amqp091.Channel {
-	exchange := EnvGet("EXCHANGE", "rest")
-	retryExchange := EnvGet("RETRY_EXCHANGE", "restRetry")
-	requestQueue := EnvGet("REQUEST_QUEUE", "restRequestsQueue")
-	retryQueue := EnvGet("RETRY_QUEUE", "restRetryQueue")
-	queueArgs := amqp091.Table{
-		"x-dead-letter-exchange": retryExchange,
-	}
-	retryArgs := amqp091.Table{
-		"x-message-ttl":          int32(1000),
-		"x-dead-letter-exchange": exchange,
-	}
-
 	ch, err := conn.Channel()
 	if err != nil {
 		logger.Fatalf("Failed to open a channel: %s", err)
@@ -130,29 +124,42 @@ func PrepareRabbitMQChannel(conn *amqp091.Connection, prefetch int) *amqp091.Cha
 		logger.Fatalf("Failed to set QoS: %s", err)
 	}
 
-	err = ch.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
+	err = ch.ExchangeDeclare(restExchange, "direct", true, false, false, false, nil)
 	if err != nil {
-		logger.Fatalf("Failed to declare exchange: %s", err)
+		logger.Fatalf("Failed to declare exchange %s: %s", restExchange, err)
 	}
 
 	err = ch.ExchangeDeclare(retryExchange, "direct", true, false, false, false, nil)
 	if err != nil {
-		logger.Fatalf("Failed to declare Retry Exchange: %s", err)
+		logger.Fatalf("Failed to declare exchange %s: %s", retryExchange, err)
 	}
 
-	q, err := ch.QueueDeclare(requestQueue, true, false, false, false, queueArgs)
+	err = ch.ExchangeDeclare(responseExchange, "direct", true, false, false, false, nil)
 	if err != nil {
-		logger.Fatalf("Failed to declare queue: %s", err)
+		logger.Fatalf("Failed to declare exchange %s: %s", responseExchange, err)
 	}
 
-	err = ch.QueueBind(q.Name, requestQueue, exchange, false, nil)
+	_, err = ch.QueueDeclare(requestQueue, true, false, false, false, amqp091.Table{"x-dead-letter-exchange": retryExchange})
 	if err != nil {
-		logger.Fatalf("Failed to bind queue: %s", err)
+		logger.Fatalf("Failed to declare queue %s: %s", requestQueue, err)
 	}
 
-	_, err = ch.QueueDeclare(retryQueue, true, false, false, false, retryArgs)
+	_, err = ch.QueueDeclare(retryQueue, true, false, false, false, amqp091.Table{
+		"x-dead-letter-exchange": restExchange,
+		"x-message-ttl":          1000,
+	})
 	if err != nil {
-		logger.Fatalf("Failed to declare Retry Queue: %s", err)
+		logger.Fatalf("Failed to declare queue %s: %s", retryQueue, err)
+	}
+
+	err = ch.QueueBind(requestQueue, "", restExchange, false, nil)
+	if err != nil {
+		logger.Fatalf("Failed to bind queue %s to exchange %s: %s", requestQueue, restExchange, err)
+	}
+
+	err = ch.QueueBind(retryQueue, "", retryExchange, false, nil)
+	if err != nil {
+		logger.Fatalf("Failed to bind queue %s to exchange %s: %s", retryQueue, retryExchange, err)
 	}
 
 	return ch
@@ -181,7 +188,7 @@ func NewRequest(channel *amqp091.Channel, rabbitMessage amqp091.Delivery) *Reque
 	}
 
 	authHeader := headers.Get("Authorization")
-	if !strings.HasPrefix(authHeader, "Bot ") && !strings.HasPrefix(authHeader, "Bearer ") {
+	if authHeader != "" && !strings.HasPrefix(authHeader, "Bot ") && !strings.HasPrefix(authHeader, "Bearer ") {
 		headers.Set("Authorization", "Bot "+authHeader)
 	}
 
@@ -294,7 +301,7 @@ func (r *Response) Send() {
 		logger.Errorf("Failed to marshal response: %s %s", jErr, retBody)
 	}
 
-	err := r.Channel.Publish("rest", r.Request.ReplyTo, false, false, amqp091.Publishing{
+	err := r.Channel.Publish(responseExchange, r.Request.ReplyTo, false, false, amqp091.Publishing{
 		ContentType:   "application/json",
 		CorrelationId: r.Request.CorrelationId,
 		Body:          bodyString,
